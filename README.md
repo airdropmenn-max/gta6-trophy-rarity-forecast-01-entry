@@ -4,80 +4,79 @@
 [![rank](https://make.fun/badge/gta6-trophy-rarity-forecast-01/airdropmenn-max/gta6-trophy-rarity-forecast-01-entry/rank.svg)](https://make.fun/bounty/gta6-trophy-rarity-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-trophy-rarity-forecast-01)
 [![reward](https://make.fun/badge/gta6-trophy-rarity-forecast-01/airdropmenn-max/gta6-trophy-rarity-forecast-01-entry/reward.svg)](https://make.fun/bounty/gta6-trophy-rarity-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-trophy-rarity-forecast-01)
 
-Forecasts every GTA VI trophy's Exophase earn rate one week after launch
-(2026-11-26T00:00:00Z) as five quantiles per trophy, for make.fun's
+One-week trophy rarity forecast for GTA VI: for all 55 trophies, the
+share of Exophase-tracked players expected to have earned each one by
+2026-11-26T00:00:00Z, as five quantiles per trophy. Built for make.fun's
 [gta6-trophy-rarity-forecast-01](https://make.fun/bounty/gta6-trophy-rarity-forecast-01) bounty ($250, 20 places).
 
-**v2.** v1 scored badly on the server (rank 1,792/2,716, loss 0.821,
-band coverage 0.0727): its player-growth prior underestimated launch
-week, and its refresh spread was capped at 0.8 logit while real
-refreshes drop rates by 1.1–1.6 logit. v2 fixes the bands, not the
-model — see "What changed in v2" below.
+**Version 2.** The first version's bands were too narrow on the server
+(rank 1,792 of 2,716, loss 0.821, coverage 0.0727): player growth was
+underestimated for launch week and the refresh spread stopped at 0.8
+logit when real refreshes pull rates down 1.1–1.6 logit. This version
+widens the bands for those two effects; the model itself is unchanged.
 
-## Run it
+## Running it
 
 ```sh
 mkdir -p out && MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-## The model
+## How it works
 
-A cohort convolution anchored on the first read:
-`rate(t) = earned(t) / players(t)`. Players follow a power law in
-hours since release; a cohort that joined at time s has had (t - s)
-hours to play and earns the trophy with probability
-`R * (1 - exp(-(t - s) / tau))`. The players tracked at the first
-read are the existing cohort: they sit at their observed rate and
-mature toward R, instead of the model pretending nobody had played
-before the first read. One structure explains the data: dilution
-(fresh players enter the denominator with zero tenure, so rates fall
-at each Exophase refresh), maturation (cohorts age into trophies
-between refreshes), saturation (rates level off at R, never past it).
+The tracked-player count follows a power law in hours since release,
+and each trophy is earned through a cohort process: players who joined
+at time s have had (h - s) hours to play, and their chance of holding
+the trophy climbs toward an eventual rate R with a timescale tau. The
+players tracked at the first read count as the opening cohort — they
+start at the rate actually observed and mature toward R. One mechanism
+then explains the three things the data does: rates fall when a
+refresh floods the denominator with new players, rise between
+refreshes as cohorts age into trophies, and level off at R.
 
-Per trophy, tau is picked by grid search and R solved by least
-squares at each tau, scored in logit space (the scale the contest
-scores on), with a small prior pulling tau toward its tier's
-timescale. Fits run on distinct snapshots only — consecutive reads
-with an identical rate vector are one observation, because the page
-is frozen between refreshes.
+Each trophy's tau is chosen by grid search and its R by least squares
+at every candidate tau, judged in logit space (the scale the contest
+scores on) with a weak prior toward the tier's typical timescale.
+Fitting uses distinct snapshots only — consecutive reads with an
+unchanged rate vector count as one observation, because the source
+page is frozen between refreshes.
 
-**Spread**: asymmetric on the logit scale. The downside carries a
-refresh-drop term — the typical logit fall of rates across reads
-where players jump, scaled by the expected refresh count over the
-horizon — plus fit residuals and the house random-walk floor. Upside
-carries half the refresh term.
+The bands are asymmetric on the logit scale. Below the median they
+carry the full refresh term; above it, half. The refresh term comes
+from residual drops: how far rates fell across a player-count jump,
+minus the fall the fitted model already expected, scaled by the
+refreshes the horizon should contain. Fit residuals and a
+random-walk floor sit underneath both sides.
 
-### What changed in v2
+## What v2 changes
 
-- **Player growth for poor histories**: when the history has fewer
-  than 3 distinct player counts, the player slope is set by a
-  launch-refresh prior — players grow 6x (638 -> 3,868) across the
-  horizon to the target, anchored on the last read — instead of the
-  fitted slope of a one-snapshot history. A rich history keeps the
-  data-driven slope.
-- **Refresh spread**: cap raised 0.8 -> 2.0 logit, prior refresh
-  drop 0.5 -> 1.2, and the spread now uses the median absolute
-  residual drop plus its SD (not SD alone). A poor history assumes
-  at least one refresh over the horizon.
-- Everything else is unchanged: cohort convolution, tau grid, tier
-  priors, upside = half the downside, determinism, 55-row output.
+- **Thin histories use a launch prior.** With fewer than 3 distinct
+  player counts on record, the player slope is set by assuming the
+  launch refresh is still coming — players multiply 6x (638 ->
+  3,868) by the target, anchored on the latest read. A rich history
+  keeps its fitted slope.
+- **Wider refresh bands.** The spread cap rises 0.8 -> 2.0 logit,
+  the no-jump prior drop 0.5 -> 1.2, and the spread now uses the
+  median absolute residual drop plus its standard deviation (not the
+  standard deviation alone). A thin history is assumed to see at
+  least one refresh over the horizon.
+- Nothing else moves: same cohort convolution, tau grid, tier
+  priors, half-strength upside, determinism, 55-row output.
 
-### Validation (local — the server grades, not this)
+## Checks (local — the server grades, not these)
 
-- Kit check (`makefun.mjs check --worktree`): 3 passed
-  (competition open, snapshot, entrypoint selects node22); the 2
-  fails are repo/bundle items handled at submit time (LICENSE and
-  `.makefun/owner.json` are carried over from v1 in the same repo,
-  transcripts are bundled by the submit flow).
-- Practice cases p00/p01: 55 rows each, values 0–100,
-  non-decreasing, ids sorted; two runs byte-identical
-  (deterministic); ~0.12 s per case (cap 8 s).
-- Outputs byte-identical to the validated reference draft on both
-  practice cases. Stress test (refresh scenario: players 638 ->
-  3,868, earned unchanged): loss v1 ~1.15–1.25 -> v2 ~0.73–0.80,
-  band coverage 0.000 -> 0.982. Flat case (no refresh): loss
-  0.20 -> 0.37 — worse than v1, deliberately: v2 hedges for the
-  refresh that launch week almost certainly brings.
+- Practice cases p00/p01: 55 rows each, ids sorted, values in range,
+  quantiles non-decreasing; two runs byte-identical (deterministic);
+  ~0.1 s per case against an 8 s cap.
+- This revision re-authors the program in a fresh session; its
+  outputs are byte-identical to the pre-revision program on p00/p01
+  and on five synthetic cases covering rich history, thin history, a
+  single snapshot, a no-jump history, and a player jump with falling
+  rates.
+- Stress test (refresh scenario: players 638 -> 3,868, earned
+  unchanged): loss v1 ~1.15–1.25 -> v2 ~0.73–0.80, band coverage
+  0.000 -> 0.982. Flat case (no refresh): loss 0.20 -> 0.37 — worse
+  than v1 on purpose: v2 hedges for the refresh that launch week
+  almost certainly brings.
 
 Deterministic, stdlib only, no network.
 
