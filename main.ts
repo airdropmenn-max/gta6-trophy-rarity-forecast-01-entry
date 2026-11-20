@@ -1,65 +1,68 @@
-// Week-One Rarity Forecaster — gta6-trophy-rarity-forecast-01
+// Week-One Rarity Forecaster v2 — gta6-trophy-rarity-forecast-01
 //
-// Forecasts, for every GTA VI trophy, its Exophase earn rate at the case's
-// target as five quantiles (0.05, 0.25, 0.5, 0.75, 0.95), scored by mean
-// pinball loss on the logit scale.
+// For every GTA VI trophy, forecasts its Exophase earn rate at the
+// case's target as five quantiles (0.05, 0.25, 0.5, 0.75, 0.95),
+// scored by mean pinball loss on the logit scale.
 //
-// The model — a cohort convolution with the first read as its baseline:
+// The model is a cohort convolution anchored on the first read:
 //
 //   rate(h) = [E_existing(h) + E_new(h)] / P(h)
 //   E_existing(h) = P0 * [r0 * e^-((h-h0)/tau) + R * (1 - e^-((h-h0)/tau))]
 //   E_new(h)      = R * ∫_{h0}^h P'(s) * (1 - e^-((h-s)/tau)) ds
 //
-// Players join over time (P grows); a cohort that joined at time s has
-// had (h - s) hours to play by time h, and earns the trophy with
-// probability R * (1 - exp(-(h - s) / tau)): R is the trophy's eventual
-// earn rate, tau its timescale (small for early story trophies, large
-// for grinds and the platinum). The players already tracked at the
-// first read form the existing cohort: they sit at their observed rate
-// r0 and mature toward R at the same timescale, instead of the model
-// pretending nobody had played before the first read (an earlier
-// version anchored tenure at release midnight, which made the model
-// rate at the first read zero and blew its residuals and medians up).
-// This one structure produces everything the data shows:
+// P(h) is the player count, a power law in hours since release. A
+// cohort that joined at time s has had (h - s) hours to play by time
+// h and earns the trophy with probability R * (1 - exp(-(h - s)/tau)):
+// R is the trophy's eventual earn rate, tau its timescale. The
+// players tracked at the first read are the existing cohort: they sit
+// at their observed rate r0 and mature toward R, instead of the model
+// pretending nobody had played before the first read. One structure
+// explains the three things the data does:
 //
-//   - dilution: new players enter the denominator with zero tenure, so
-//     rates FALL at each Exophase refresh (launch night: 638 -> 3,868
-//     players, almost every rate lower);
+//   - dilution: fresh players enter the denominator with zero tenure,
+//     so rates FALL at each Exophase refresh (launch night: 638 ->
+//     3,868 players, almost every rate lower);
 //   - maturation: between refreshes, cohorts age into trophies and
 //     rates rise, fastest for easy trophies;
-//   - saturation: rates level off at R, never past it (a log-log linear
-//     extrapolation of earned counts has no saturation and blew easy
-//     trophies past their eventual rate on a synthetic final-like case).
+//   - saturation: rates level off at R and never pass it.
 //
-// Per trophy, tau is chosen by grid search and R solved by least
+// Per trophy, tau is picked by grid search and R solved by least
 // squares at each tau, scored in logit space (the scale the contest
-// scores on), plus a small prior pulling tau toward its tier's
-// timescale — the prior only breaks ties the history cannot (a flat
-// history), and the data overwhelms it when the history is rich.
+// scores on), with a small prior pulling tau toward its tier's
+// timescale — the prior only breaks ties a flat history cannot, and
+// the data overwhelms it when the history is rich.
 //
 // Two things the fits are careful about, because the page is frozen
 // between refreshes:
 //
-//   - Fits run on distinct snapshots only (consecutive reads with an
-//     identical rate vector are one observation). Fitting all 100+
-//     reads would let the frozen plateaus dominate the fit and inflate
-//     the residuals with step-vs-smooth misfit that is an artifact of
-//     the observation process, not forecast uncertainty.
-//   - The refresh spread term uses RESIDUAL drops: the observed logit
-//     fall across a refresh minus the fall the fitted model already
-//     predicts. The predictable part of a refresh (dilution from known
-//     player growth) lives in the median; only the unpredictable part
-//     belongs in the spread.
+//   - Fits run on distinct snapshots only. Consecutive reads with an
+//     identical rate vector are one observation; fitting all 100+
+//     reads would let the frozen plateaus dominate and inflate the
+//     residuals with step-vs-smooth misfit that is an artifact of the
+//     observation process, not forecast uncertainty.
+//   - The refresh spread uses RESIDUAL drops: the observed logit fall
+//     across a refresh minus the fall the fitted model already
+//     predicts. The predictable part of a refresh (dilution from
+//     known player growth) lives in the median; only the
+//     unpredictable part belongs in the spread.
 //
-// Players P(h) is a power law in time since release, fitted as a
-// least-squares line of log players against log(1 + h) over the
-// distinct snapshots, slope shrunk toward a launch-growth prior of 1.0
-// so a flat history still forecasts growth instead of freezing the
-// player count.
+// What v2 changes, and why (v1's bands missed the refresh):
+// v1 scored badly on the server (rank 1,792/2,716, loss 0.821,
+// band coverage 0.0727). Its player-growth prior underestimated
+// launch week, and its refresh spread was capped at 0.8 logit while
+// real refreshes drop rates by 1.1-1.6 logit. So v2:
 //
-// Spread is asymmetric on the logit scale. The downside (tau < 0.5)
-// carries the residual-refresh term plus fit residuals and the house
-// random-walk floor. The upside carries half the refresh term.
+//   - when the history is poor (fewer than 3 distinct player
+//     counts), the player slope is set by a launch-refresh prior:
+//     players grow 6x (638 -> 3,868) across the horizon to the
+//     target, instead of the fitted slope of a one-snapshot history;
+//   - the refresh-spread cap rises from 0.8 to 2.0 logit, the prior
+//     refresh drop from 0.5 to 1.2, and the spread now uses the
+//     median absolute residual drop plus its SD (not SD alone);
+//   - a poor history assumes at least one refresh over the horizon.
+//
+// The cohort convolution, the tau grid, the tier priors, and the
+// asymmetric spread (upside = half the downside) are unchanged.
 //
 // Everything is deterministic: pure functions of the case file, no
 // clock, no randomness, no network. Output rows are sorted by trophy
@@ -82,8 +85,14 @@ const Z = [-1.645, -0.674, 0, 0.674, 1.645];
 const SIGMA_RW = 0.5;
 /** Prior slope of log players against log(1 + hours since release). */
 const PRIOR_PLAYERS_SLOPE = 1.0;
+/** Player multiplier across one launch refresh (638 -> 3,868). */
+const LAUNCH_REFRESH_PLAYERS = 6.0;
+/** Upper bound on the player slope while the launch prior is in force. */
+const MAX_PLAYERS_SLOPE = 3.0;
+/** Cap on the refresh spread term, logit units. */
+const MAX_REFRESH_SPREAD = 2.0;
 /** Prior refresh drop (logit) when the history shows no refresh jump. */
-const PRIOR_REFRESH_DROP = 0.5;
+const PRIOR_REFRESH_DROP = 1.2;
 /** Prior gap between refreshes, in days, when none are observed. */
 const PRIOR_REFRESH_GAP_DAYS = 0.25;
 /** Release instant used when the case names no usable release date. */
@@ -170,19 +179,20 @@ function sdOf(values: number[]): number {
 }
 
 /**
- * For one trophy timescale tau, the model's rate (percent) at each query
- * time, given the eventual rate R:
+ * For one trophy timescale tau, the model's rate (percent) at each
+ * query time, given the eventual rate R:
  *
  *   rate(h) = [P0 * r0 * e^-((h-h0)/tau) + R * K(h)] / P(h)
  *   K(h) = P0 * (1 - e^-((h-h0)/tau))
  *          + (P(h) - P(h0)) - e^-((h-h0)/tau) * U(h)
  *   U(h) = ∫_{h0}^h P'(s) * e^((s-h0)/tau) ds
  *
- * P(h) is the fitted players power law, P0 and r0 the observed players
- * and rate at the first read (time h0). The integral is marched once
- * with the trapezoid rule over the sorted query times. Returns, per
- * query time, the pair [base, k]: rate = base + R * k, both already
- * divided by P(h) so the caller works in rate units directly.
+ * P(h) is the fitted players power law, P0 and r0 the observed
+ * players and rate at the first read (time h0). The integral is
+ * marched once with the trapezoid rule over the sorted query times.
+ * Returns, per query time, the pair [base, k]:
+ * rate = base + R * k, both already divided by P(h) so the caller
+ * works in rate units directly.
  */
 function rateParts(
   queryHours: number[],
@@ -261,22 +271,49 @@ function forecastCase(c: CaseFile): { id: string; q: number[] }[] {
   const h0 = snapHours.length > 0 ? snapHours[0] : 0;
 
   // ---- Players model: log players vs log(1 + hours since release),
-  // fitted on the distinct snapshots.
+  // fitted on the distinct snapshots. When the history is poor (fewer
+  // than 3 distinct player counts), the launch refresh is still
+  // ahead of the last read, so the slope is set by the launch prior:
+  // players grow LAUNCH_REFRESH_PLAYERS-fold across the horizon to
+  // the target, anchored on the last read. A rich history keeps the
+  // data-driven slope, shrunk toward the prior.
   let aP = 0;
   let bP = PRIOR_PLAYERS_SLOPE;
   let residPlayers = 0.25;
+  const distinctPlayers = new Set(snaps.map((r) => r.players_tracked)).size;
+  const historyPoor = distinctPlayers < 3;
   if (snaps.length >= 2) {
     const xs = snaps.map((r) => xOf(r.at));
     const ys = snaps.map((r) => Math.log(r.players_tracked));
     const fit = fitLine(xs, ys);
-    const distinct = new Set(snaps.map((r) => r.players_tracked)).size - 1;
-    bP = clamp((distinct * fit.b + PRIOR_PLAYERS_SLOPE) / (distinct + 1), 0, 1.5);
+    if (historyPoor && last) {
+      const hoursAhead = Math.max(1, hTarget - hoursSinceRelease(last.at));
+      bP = clamp(
+        Math.log(LAUNCH_REFRESH_PLAYERS) / Math.log1p(hoursAhead),
+        PRIOR_PLAYERS_SLOPE,
+        MAX_PLAYERS_SLOPE,
+      );
+      aP = Math.log(last.players_tracked) - bP * xOf(last.at);
+      residPlayers = Math.max(0.25, fit.sd);
+    } else {
+      const distinct = distinctPlayers - 1;
+      bP = clamp((distinct * fit.b + PRIOR_PLAYERS_SLOPE) / (distinct + 1), 0, 1.5);
+    }
     const mx = xs.reduce((s, v) => s + v, 0) / xs.length;
     const my = ys.reduce((s, v) => s + v, 0) / ys.length;
     aP = my - bP * mx;
     residPlayers = fit.sd;
   } else if (last) {
-    aP = Math.log(last.players_tracked) - PRIOR_PLAYERS_SLOPE * xOf(last.at);
+    aP = Math.log(last.players_tracked) - bP * xOf(last.at);
+    if (historyPoor) {
+      const hoursAhead = Math.max(1, hTarget - hoursSinceRelease(last.at));
+      bP = clamp(
+        Math.log(LAUNCH_REFRESH_PLAYERS) / Math.log1p(hoursAhead),
+        PRIOR_PLAYERS_SLOPE,
+        MAX_PLAYERS_SLOPE,
+      );
+      aP = Math.log(last.players_tracked) - bP * xOf(last.at);
+    }
   }
 
   // ---- Phase 1: fit every trophy (tau by grid search, R by least
@@ -379,12 +416,13 @@ function forecastCase(c: CaseFile): { id: string; q: number[] }[] {
   const spanDays = snaps.length >= 2
     ? Math.max(0.05, (Date.parse(snaps[snaps.length - 1].at) - Date.parse(snaps[0].at)) / 86400000)
     : 0.05;
-  const expectedRefreshes = jumpCount > 0
-    ? (jumpCount / spanDays) * horizonDays
-    : horizonDays / PRIOR_REFRESH_GAP_DAYS;
+  const expectedRefreshes = Math.max(
+    historyPoor ? 1 : 0,
+    jumpCount > 0 ? (jumpCount / spanDays) * horizonDays : horizonDays / PRIOR_REFRESH_GAP_DAYS,
+  );
   const sRefresh = residDrops.length > 0
-    ? clamp(sdOf(residDrops) * Math.sqrt(expectedRefreshes), 0, 0.8)
-    : clamp(PRIOR_REFRESH_DROP * Math.sqrt(expectedRefreshes), 0, 0.8);
+    ? clamp((medianOf(residDrops.map((v) => Math.abs(v))) + sdOf(residDrops)) * Math.sqrt(expectedRefreshes), 0, MAX_REFRESH_SPREAD)
+    : clamp(PRIOR_REFRESH_DROP * Math.sqrt(expectedRefreshes), 0, MAX_REFRESH_SPREAD);
 
   // ---- Phase 3: asymmetric spread on the logit scale, per trophy.
   const sRw = SIGMA_RW * Math.sqrt(horizonDays);
@@ -415,16 +453,21 @@ function forecastCase(c: CaseFile): { id: string; q: number[] }[] {
   return rows;
 }
 
+/** Forecast one case file and write its output file. */
+function runCase(inputPath: string, outputPath: string): void {
+  const c = JSON.parse(readFileSync(inputPath, 'utf8')) as CaseFile;
+  const rows = forecastCase(c);
+  const out = { trophies: rows.map((r) => ({ id: Number(r.id), q: r.q })) };
+  writeFileSync(outputPath, JSON.stringify(out));
+}
+
 function main(): void {
   mkdirSync(OUTPUT_DIR, { recursive: true });
   const files = readdirSync(INPUT_DIR)
     .filter((f) => f.endsWith('.in'))
     .sort();
   for (const file of files) {
-    const c = JSON.parse(readFileSync(join(INPUT_DIR, file), 'utf8')) as CaseFile;
-    const rows = forecastCase(c);
-    const out = { trophies: rows.map((r) => ({ id: Number(r.id), q: r.q })) };
-    writeFileSync(join(OUTPUT_DIR, file.replace(/\.in$/, '.out')), JSON.stringify(out));
+    runCase(join(INPUT_DIR, file), join(OUTPUT_DIR, file.replace(/\.in$/, '.out')));
   }
 }
 
